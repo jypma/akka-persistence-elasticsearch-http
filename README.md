@@ -14,15 +14,10 @@ Its current implementation is tested using the following stack:
 
 ## Usage
 
-No releases yet, you can build it yourself using:
-
-- `docker-compose up`
-- `sbt publishLocal`
-
-In your application, you add you SBT dependency:
+Add the current release as a dependency to your `build.sbt`:
 
 ```scala
-libraryDependencies += "com.tradeshift" %% "akka-persistence-elasticsearch-http" % "0.0.1-SNAPSHOT"
+libraryDependencies += "com.tradeshift" %% "akka-persistence-elasticsearch-http" % "0.1.1"
 ```
 
 And configure `application.conf` to use the journal:
