@@ -1,5 +1,4 @@
-Contributing to this project
-============================
+# Contributing to this project
 
 We welcome Github pull requests and issues created by anyone.
 
@@ -18,8 +17,7 @@ We require that pull requests:
 - Have unit tests for all non-trivial functionality, where a unit ideally does not span more than one class
 - Have grammatically correct PR text
 
-Release process
-===============
+## Release process
 
 We use <a href="https://semver.org/spec/v2.0.0.html">Semantic Versioning 2.0</a> to determine version numbers
 for releases. Before making a release, decide whether it is a bump in the major, minor or bugfix version:
@@ -39,3 +37,18 @@ The release process is as follows:
 ```
 sbt -DBUMP=bugfix "release with-defaults"
 ```
+
+## Building locally
+
+- `docker-compose up`
+- `sbt publishLocal`
+
+A snapshot version number will be calculated and pushed into your local Ivy repository.
+
+In your application, you add you SBT dependency:
+
+```scala
+libraryDependencies += "com.tradeshift" %% "akka-persistence-elasticsearch-http" % "0.0.1-SNAPSHOT"
+```
+
+replacing `0.0.1-SNAPSHOT` with the actual version that you ended up building.
