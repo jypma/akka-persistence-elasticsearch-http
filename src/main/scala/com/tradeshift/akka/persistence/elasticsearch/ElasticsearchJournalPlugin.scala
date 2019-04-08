@@ -6,7 +6,7 @@ import akka.persistence.{ AtomicWrite, PersistentRepr }
 import akka.persistence.journal.{ AsyncRecovery, AsyncWriteJournal }
 import akka.serialization.SerializationExtension
 import java.util.Base64
-import org.json4s.JsonAST.{ JInt, JLong, JObject, JString, JValue }
+import org.json4s.JsonAST.{ JInt, JLong, JObject, JString }
 import scala.collection.immutable
 import scala.collection.mutable
 import scala.concurrent.{ Future, Promise }

@@ -20,6 +20,14 @@ libraryDependencies ++= Seq(
   "org.slf4j" % "slf4j-log4j12" % "1.7.26" % "test"
 )
 
+addCompilerPlugin(scalafixSemanticdb) // Required by ScalaFix
+ scalacOptions ++= Seq(
+    "-feature",
+    "-Xlint",
+    "-Yrangepos",          // required by SemanticDB
+    "-Ywarn-unused-import" // required by RemoveUnused
+)
+
 import sbtrelease._
 // we hide the existing definition for setReleaseVersion to replace it with our own
 import sbtrelease.ReleaseStateTransformations.{setReleaseVersion=>_,_}

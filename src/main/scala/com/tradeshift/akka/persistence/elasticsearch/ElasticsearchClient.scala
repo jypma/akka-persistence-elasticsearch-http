@@ -1,22 +1,19 @@
 package com.tradeshift.akka.persistence.elasticsearch
 
 import akka.actor.ActorSystem
-import akka.http.scaladsl.model.{ HttpEntity, HttpMethod, HttpMethods }
+import akka.http.scaladsl.model.{ HttpEntity, HttpMethod }
 import akka.http.scaladsl.model.HttpMethods.{PUT, POST}
 import akka.http.scaladsl.model.ContentTypes.`application/json`
 import akka.stream.ActorMaterializer
 import akka.http.scaladsl.Http
-import akka.http.scaladsl.model.Uri.Authority
 import akka.http.scaladsl.model.{ HttpRequest, HttpResponse, RequestEntity, Uri }
 import akka.http.scaladsl.model.Uri.Path
 import akka.http.scaladsl.model.Uri.Query
 import akka.http.scaladsl.model.Uri.Path./
-import com.typesafe.config.Config
-import org.json4s.JsonAST.{ JDouble, JInt, JLong, JObject, JValue }
+import org.json4s.JsonAST.{ JDouble, JObject, JValue }
 import org.json4s.JsonDSL._
 import org.json4s.native.JsonMethods.{parse, render, pretty}
 import scala.concurrent.Future
-import scala.concurrent.duration._
 import akka.http.scaladsl.unmarshalling.Unmarshal
 import com.typesafe.scalalogging.StrictLogging
 
