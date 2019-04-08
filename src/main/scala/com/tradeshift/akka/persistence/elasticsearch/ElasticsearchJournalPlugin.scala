@@ -1,7 +1,7 @@
 
 package com.tradeshift.akka.persistence.elasticsearch
 
-import akka.actor.{ Actor, Timers }
+import akka.actor.{ Actor, ActorLogging, Timers }
 import akka.persistence.{ AtomicWrite, PersistentRepr }
 import akka.persistence.journal.{ AsyncRecovery, AsyncWriteJournal }
 import akka.serialization.SerializationExtension
@@ -15,7 +15,7 @@ import scala.util.control.NonFatal
 import org.json4s.JsonDSL._
 import scala.concurrent.duration._
 
-class ElasticsearchJournalPlugin extends AsyncWriteJournal with AsyncRecovery with Timers {
+class ElasticsearchJournalPlugin extends AsyncWriteJournal with AsyncRecovery with Timers with ActorLogging {
   import ElasticsearchJournalPlugin._
   import context.dispatcher
 
@@ -56,20 +56,15 @@ class ElasticsearchJournalPlugin extends AsyncWriteJournal with AsyncRecovery wi
         ("message" -> write.payload.map { pr =>
           Base64.getEncoder().encodeToString(serializer.serialize(pr).get)
         })
-      timers.startSingleTimer(write.persistenceId, ForgetHighest(write.persistenceId), indexDelay)
       if (knownHighest.get(write.persistenceId).exists(p => !p.isCompleted)) {
         // We may be emitting too low sequence numbers on quick restart in this case.
-        println("WARN: concurrent write detected for " + write.persistenceId)
+        log.warning(s"WARN: concurrent write detected for ${write.persistenceId}")
       }
-      println("   go write, existing = " + knownDirty.get(write.persistenceId))
-      if (knownDirty.get(write.persistenceId).filter(_.isCompleted).isEmpty) {
-        knownDirty(write.persistenceId) = Promise[Unit]
-      }
+      markAsDirty(write.persistenceId)
       val p1 = Promise[Long]
       knownHighest(write.persistenceId) = p1
       client.index(s"${write.payload.head.persistenceId}-${write.payload.head.sequenceNr}", doc)
         .transform(t => {
-          println("  Completing " + write.persistenceId)
           p1.success(if (t.isSuccess) write.payload.last.sequenceNr else write.payload.head.sequenceNr - 1)
           Success(t)
         })
@@ -82,22 +77,14 @@ class ElasticsearchJournalPlugin extends AsyncWriteJournal with AsyncRecovery wi
   }
 
   override def asyncDeleteMessagesTo(persistenceId: String, toSequenceNr: Long): Future[Unit] = afterInit {
-    println("delete " + persistenceId + " to " + toSequenceNr)
-    val f = afterNonDirty(persistenceId) {
-      println("   go, existing = " + knownDirty.get(persistenceId))
-      if (knownDirty.get(persistenceId).filter(_.isCompleted).isEmpty) {
-        knownDirty(persistenceId) = Promise[Unit]
-      }
-      timers.startSingleTimer(persistenceId, ForgetHighest(persistenceId), indexDelay)
+    afterNonDirty(persistenceId) {
+      markAsDirty(persistenceId)
       deletePartial(persistenceId, toSequenceNr).flatMap { max => deleteDocs(persistenceId, max)}
     }
-    f.onComplete(r => println("delete complete: " + r))
-
-    f
   }
 
   private def deletePartial(persistenceId: String, to: Long): Future[Long] = {
-    println("deletePartial " + persistenceId + " to " + to)
+    log.debug(s"deletePartial $persistenceId up to seqNr $to")
     val matchPersistenceId: JObject = ("term" -> ("persistenceId" -> persistenceId))
     val matchSeqNr: JObject = ("term" -> ("sequenceNr" -> to))
     client.search("query" -> ("bool" -> ("must" -> Seq(matchPersistenceId, matchSeqNr)))).flatMap { resp =>
@@ -123,21 +110,28 @@ class ElasticsearchJournalPlugin extends AsyncWriteJournal with AsyncRecovery wi
   }
 
   private def deleteDocs(persistenceId: String, to: Long): Future[Unit] = {
-    println("deleteDocs " + persistenceId + " to " + to)
+    log.debug(s"deleteDocs $persistenceId up to seqNr $to")
     val matchPersistenceId: JObject = ("term" -> ("persistenceId" -> persistenceId))
     val matchSeqNr: JObject = ("range" -> ("sequenceNr" -> ("lte" -> to)))
     client.deleteAll("query" -> ("bool" -> ("must" -> Seq(matchPersistenceId, matchSeqNr))))
   }
 
+  private def markAsDirty(persistenceId: String): Unit = {
+    if (knownDirty.get(persistenceId).filter(_.isCompleted).isEmpty) {
+      log.debug("${persitsenceId} became dirty.")
+      knownDirty(persistenceId) = Promise[Unit]
+    }
+    timers.startSingleTimer(persistenceId, AssumeIndexComplete(persistenceId), indexDelay)
+  }
+
   override def receivePluginInternal: Actor.Receive = {
-    case ForgetHighest(persistenceId) =>
+    case AssumeIndexComplete(persistenceId) =>
       for (p <- knownHighest.get(persistenceId)) {
         if (p.isCompleted) {
           knownHighest -= persistenceId
         } else {
-          // Write must still be in progress, try again later
-          println("retry later forgetting " + persistenceId)
-          timers.startSingleTimer(persistenceId, ForgetHighest(persistenceId), 10.seconds)
+          log.warning(s"Detected very long write for $persistenceId")
+          timers.startSingleTimer(persistenceId, AssumeIndexComplete(persistenceId), 10.seconds)
         }
       }
 
@@ -149,12 +143,10 @@ class ElasticsearchJournalPlugin extends AsyncWriteJournal with AsyncRecovery wi
 
   override def asyncReplayMessages(persistenceId: String, fromSequenceNr: Long, toSequenceNr: Long,
     max: Long)(recoveryCallback: PersistentRepr ⇒ Unit): Future[Unit] = afterInit {
-    println("asyncReplay " + persistenceId + " " + fromSequenceNr + ".." + toSequenceNr)
 
     val to = if ((toSequenceNr - fromSequenceNr) < max) toSequenceNr else fromSequenceNr + max - 1
 
     afterNonDirty(persistenceId) {
-      println("   go")
       replay(persistenceId, fromSequenceNr, to)(recoveryCallback)
     }
   }
@@ -165,17 +157,13 @@ class ElasticsearchJournalPlugin extends AsyncWriteJournal with AsyncRecovery wi
         replay(persistenceId, from + replayChunkSize + 1, to)(recoveryCallback)
       }
     } else {
+      log.debug(s"Replaying $persistenceId from $from to $to")
       val matchPersistenceId: JObject = ("term" -> ("persistenceId" -> persistenceId))
       val matchSeqNr: JObject = ("range" -> ("sequenceNr" -> ("gte" -> from) ~ ("lte" -> to)))
       client.search(("query" -> ("bool" -> ("must" -> Seq(matchPersistenceId, matchSeqNr)))) ~ ("sort" -> Seq("sequenceNr"))).map { resp =>
         val hits = resp \ "hits" \ "hits"
-
-        println(hits)
         val sequenceNrs = for { JInt(nr) <- hits \\ "sequenceNr" } yield nr
-        // if (sequenceNrs != (from.to(to))) {
-        //   this actually happens when msgs are deleted now.
-        //   throw new RuntimeException("Received invalid seq nrs for " + persistenceId + ". Expected " + from + ".." + to + ", got " + sequenceNrs)
-        // }
+        log.debug(s"  Received seqNrs $sequenceNrs")
         for (JString(message) <- hits \\ "message") {
           val pr = serializer.deserialize[PersistentRepr](Base64.getDecoder().decode(message), classOf[PersistentRepr]).get
           recoveryCallback(pr)
@@ -194,9 +182,8 @@ class ElasticsearchJournalPlugin extends AsyncWriteJournal with AsyncRecovery wi
         client.searchMax(("query" -> ("bool" -> ("must" -> Seq(term, range)))), "sequenceNr").map(_.map(_.toLong).getOrElse(0))
     }
   }
-
 }
 
 object ElasticsearchJournalPlugin {
-  private[elasticsearch] case class ForgetHighest(persistenceId: String)
+  private[elasticsearch] case class AssumeIndexComplete(persistenceId: String)
 }

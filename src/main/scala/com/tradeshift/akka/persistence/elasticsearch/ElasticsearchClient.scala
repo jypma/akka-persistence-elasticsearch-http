@@ -18,8 +18,9 @@ import org.json4s.native.JsonMethods.{parse, render, pretty}
 import scala.concurrent.Future
 import scala.concurrent.duration._
 import akka.http.scaladsl.unmarshalling.Unmarshal
+import com.typesafe.scalalogging.StrictLogging
 
-class ElasticsearchClient(implicit system: ActorSystem) {
+class ElasticsearchClient(implicit system: ActorSystem) extends StrictLogging {
   implicit val mat = ActorMaterializer()
   import system.dispatcher
 
@@ -49,12 +50,12 @@ class ElasticsearchClient(implicit system: ActorSystem) {
         path = /(indexName) / "_mapping" / "_doc",
         entity = HttpEntity(`application/json`, pretty(render(mappings))))
     } yield {
-      println("Created.")
+      logger.debug(s"Created or updated elasticsearch journal index ${indexName}.")
     }
   }
 
   def index(id: String, doc: JObject): Future[Unit] = {
-    println("index " + id + ": " + pretty(render(doc)))
+    logger.debug(s"Store ${id}: ${pretty(render(doc))}")
     request(
       path = /(indexName) / "_doc" / id,
       entity = HttpEntity(`application/json`, pretty(render(doc))))
@@ -64,29 +65,24 @@ class ElasticsearchClient(implicit system: ActorSystem) {
   // https://www.elastic.co/guide/en/elasticsearch/reference/current/search-aggregations-metrics-max-aggregation.html
   // ES aggregates as double always. Should be fine until someone hits 2^53 sequence numbers.
   def searchMax(q: JObject, field: String): Future[Option[Double]] = {
-    println("search max " + q + " for " + field)
+    logger.debug(s"Search max $q for $field")
     search(q ~ ("aggs" -> ("max_value" -> ("max" -> ("field" -> field)))), size = 0).map { resp =>
       (resp \\ "aggregations" \\ "value" \\ classOf[JDouble]).headOption
-    }.map { o =>
-      println("   was " + o)
-      o
     }
   }
 
   def search(q: JObject, size: Int = 10000): Future[JValue] = {
-    println("search " + pretty(render(q)))
+    logger.debug(s"search ${pretty(render(q))}")
     request(
       path = /(indexName) / "_search",
       query = Query(("size", size.toString)),
       entity = HttpEntity(`application/json`, pretty(render(q))))
       .flatMap(resp => Unmarshal(resp).to[String])
-      .map(resp => {
-        parse(resp)
-      })
+      .map(resp => parse(resp))
   }
 
   def deleteAll(q: JObject): Future[Unit] = {
-    println("deleteAll " + pretty(render(q)))
+    logger.debug(s"deleteAll ${pretty(render(q))}")
     request(
       path = /(indexName) / "_delete_by_query",
       entity = HttpEntity(`application/json`, pretty(render(q))))
