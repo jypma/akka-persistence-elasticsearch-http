@@ -1,0 +1,19 @@
+version: "3"
+services:
+  elasticsearch:
+    build: elasticsearch
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    environment:
+      - "http.cors.enabled=true"
+      - "http.cors.allow-origin=*"
+      - http.cors.allow-methods=OPTIONS, HEAD, GET, POST, PUT, DELETE
+      - http.cors.allow-headers=Content-Type, Access-Control-Allow-Headers, Authorization, X-Requested-With
+      - http.cors.allow-credentials=true
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m" 
+     # we also use cassandra, for now just start the one in document-core's docker-compose file
+  es-head:
+    image: tobias74/elasticsearch-head:6
+    ports:
+      - "9100:9100"
