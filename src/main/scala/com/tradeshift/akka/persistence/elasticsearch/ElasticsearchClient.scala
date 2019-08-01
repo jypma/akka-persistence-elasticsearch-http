@@ -82,8 +82,15 @@ class ElasticsearchClient(implicit system: ActorSystem) extends StrictLogging {
     logger.debug(s"deleteAll ${pretty(render(q))}")
     request(
       path = /(indexName) / "_delete_by_query",
+      query = Query("conflicts" -> "proceed"),
       entity = HttpEntity(`application/json`, pretty(render(q))))
-      .map(resp => ())
+      .flatMap(resp => Unmarshal(resp).to[String])
+      .map(resp => parse(resp))
+      .map { json =>
+        for (v <- json \\ "version_conflicts" \\ classOf[JDouble]) {
+          logger.warn(s"Version conflicts: ${v}")
+        }
+      }
   }
 
   private def request(path: Path, entity: RequestEntity, query: Query = Query.Empty, method: HttpMethod = POST): Future[HttpResponse] = {
