@@ -2,7 +2,7 @@ val akkaVersion = "2.5.21"
 
 organization := "com.tradeshift"
 
-scalaVersion := "2.12.7"
+scalaVersion := "2.12.8"
 
 licenses += ("MIT", url("http://opensource.org/licenses/MIT"))
 
