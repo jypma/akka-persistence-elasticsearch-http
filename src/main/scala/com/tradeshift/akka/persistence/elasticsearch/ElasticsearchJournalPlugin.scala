@@ -117,14 +117,17 @@ class ElasticsearchJournalPlugin extends AsyncWriteJournal with AsyncRecovery wi
   }
 
   private def markAsDirty(persistenceId: String): Unit = {
-    if (knownDirty.get(persistenceId).filter(_.isCompleted).isEmpty) {
-      log.debug("${persitsenceId} became dirty.")
-      knownDirty(persistenceId) = Promise[Unit]
-    }
-    timers.startSingleTimer(persistenceId, AssumeIndexComplete(persistenceId), indexDelay)
+    self ! MarkIndexStarted(persistenceId)
   }
 
   override def receivePluginInternal: Actor.Receive = {
+    case MarkIndexStarted(persistenceId) =>
+      if (knownDirty.get(persistenceId).isEmpty) {
+        log.debug(s"${persistenceId} became dirty.")
+        knownDirty(persistenceId) = Promise[Unit]
+      }
+      timers.startSingleTimer(persistenceId, AssumeIndexComplete(persistenceId), indexDelay)
+
     case AssumeIndexComplete(persistenceId) =>
       for (p <- knownHighest.get(persistenceId)) {
         if (p.isCompleted) {
@@ -136,6 +139,7 @@ class ElasticsearchJournalPlugin extends AsyncWriteJournal with AsyncRecovery wi
       }
 
       for (d <- knownDirty.get(persistenceId)) {
+        log.debug(s"${persistenceId} is now no longer dirty.")
         d.success(())
       }
       knownDirty -= persistenceId
@@ -185,5 +189,6 @@ class ElasticsearchJournalPlugin extends AsyncWriteJournal with AsyncRecovery wi
 }
 
 object ElasticsearchJournalPlugin {
+  private[elasticsearch] case class MarkIndexStarted(persistenceId: String)
   private[elasticsearch] case class AssumeIndexComplete(persistenceId: String)
 }
