@@ -2,11 +2,12 @@ package com.tradeshift.akka.persistence.elasticsearch
 
 import akka.actor.ActorSystem
 import akka.http.scaladsl.model.{ HttpEntity, HttpMethod }
-import akka.http.scaladsl.model.HttpMethods.{PUT, POST}
+import akka.http.scaladsl.model.HttpMethods.{GET, PUT, POST}
 import akka.http.scaladsl.model.ContentTypes.`application/json`
 import akka.stream.ActorMaterializer
 import akka.http.scaladsl.Http
-import akka.http.scaladsl.model.{ HttpRequest, HttpResponse, RequestEntity, Uri }
+import akka.http.scaladsl.model.{ HttpRequest, HttpResponse, RequestEntity, Uri, StatusCodes }
+import StatusCodes.NotFound
 import akka.http.scaladsl.model.Uri.Path
 import akka.http.scaladsl.model.Uri.Query
 import akka.http.scaladsl.model.Uri.Path./
@@ -30,8 +31,7 @@ class ElasticsearchClient(implicit system: ActorSystem) extends StrictLogging {
 
   def createIndex(settings: JObject, mappings: JObject): Future[Unit] = {
     for {
-      resp1 <- request(
-        method = PUT,
+      resp1 <- request(PUT,
         path = /(indexName),
         entity = HttpEntity(`application/json`, pretty(render(
           ("settings" -> settings) ~
@@ -53,10 +53,32 @@ class ElasticsearchClient(implicit system: ActorSystem) extends StrictLogging {
 
   def index(id: String, doc: JObject): Future[Unit] = {
     logger.debug(s"Store ${id}: ${pretty(render(doc))}")
-    request(
+    request(POST,
       path = /(indexName) / "_doc" / id,
       entity = HttpEntity(`application/json`, pretty(render(doc))))
     .map(resp => ())
+  }
+
+  def upsert(id: String, fields: JObject): Future[Unit] = {
+    logger.debug(s"Upsert ${id}: ${pretty(render(fields))}")
+    request(POST,
+      path = /(indexName) / "_doc" / id / "_update",
+      entity = HttpEntity(`application/json`, pretty(render(
+        ("doc" -> fields) ~
+        ("doc_as_upsert" -> true)
+      ))))
+    .map(resp => ())
+  }
+
+  def get(id: String): Future[Option[JValue]] = {
+    logger.debug(s"get ${id}")
+    request(GET,
+      path = /(indexName) / "_doc" / id)
+      .flatMap(resp => Unmarshal(resp).to[String])
+      .map(resp => Some(parse(resp) \\ "_source"))
+      .recover {
+        case x:NoSuchElementException => None
+      }
   }
 
   // https://www.elastic.co/guide/en/elasticsearch/reference/current/search-aggregations-metrics-max-aggregation.html
@@ -70,7 +92,7 @@ class ElasticsearchClient(implicit system: ActorSystem) extends StrictLogging {
 
   def search(q: JObject, size: Int = 10000): Future[JValue] = {
     logger.debug(s"search ${pretty(render(q))}")
-    request(
+    request(POST,
       path = /(indexName) / "_search",
       query = Query(("size", size.toString)),
       entity = HttpEntity(`application/json`, pretty(render(q))))
@@ -80,17 +102,31 @@ class ElasticsearchClient(implicit system: ActorSystem) extends StrictLogging {
 
   def deleteAll(q: JObject): Future[Unit] = {
     logger.debug(s"deleteAll ${pretty(render(q))}")
-    request(
+    request(POST,
       path = /(indexName) / "_delete_by_query",
+      query = Query("conflicts" -> "proceed"),
       entity = HttpEntity(`application/json`, pretty(render(q))))
-      .map(resp => ())
+      .flatMap(resp => Unmarshal(resp).to[String])
+      .map(resp => parse(resp))
+      .map { json =>
+        for (v <- json \\ "version_conflicts" \\ classOf[JDouble]) {
+          logger.warn(s"Version conflicts: ${v}")
+        }
+      }
   }
 
-  private def request(path: Path, entity: RequestEntity, query: Query = Query.Empty, method: HttpMethod = POST): Future[HttpResponse] = {
-    http.singleRequest(HttpRequest(uri = baseUri.withPath(path).withQuery(query), entity = entity, method = method)).map { resp =>
+  private def request(method: HttpMethod, path: Path, entity: RequestEntity = HttpEntity.Empty, query: Query = Query.Empty): Future[HttpResponse] = {
+
+    http.singleRequest(HttpRequest(
+      uri = baseUri.withPath(path).withQuery(query), entity = entity, method = method
+    )).map { resp =>
       if (resp.status.isFailure()) {
         resp.discardEntityBytes()
-        throw new RuntimeException("ES request failed: " + resp)
+        if (resp.status == NotFound) {
+          throw new NoSuchElementException("Not found: " + path)
+        } else {
+          throw new RuntimeException("ES request failed: " + resp)
+        }
       }
       resp
     }

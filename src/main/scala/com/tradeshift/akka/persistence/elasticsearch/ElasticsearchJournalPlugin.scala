@@ -77,9 +77,24 @@ class ElasticsearchJournalPlugin extends AsyncWriteJournal with AsyncRecovery wi
   }
 
   override def asyncDeleteMessagesTo(persistenceId: String, toSequenceNr: Long): Future[Unit] = afterInit {
-    afterNonDirty(persistenceId) {
-      markAsDirty(persistenceId)
-      deletePartial(persistenceId, toSequenceNr).flatMap { max => deleteDocs(persistenceId, max)}
+    markDeleted(persistenceId, toSequenceNr).zip(
+      deletePartial(persistenceId, toSequenceNr).flatMap { max => deleteDocs(persistenceId, max) }
+    ).map(_ => ())
+  }
+
+  private def getDeletedMark(persistenceId: String): Future[Long] = afterInit {
+    client.get(persistenceId)
+      .map(_.toList.flatMap(_ \\ "deletedSequenceNr" \\ classOf[JInt])) // JInt actually wraps BigInt
+      .map(_.headOption.map(_.toLong).getOrElse(0L))
+  }
+
+  private def markDeleted(persistenceId: String, to: Long): Future[Unit] = afterInit {
+    for {
+      existing <- getDeletedMark(persistenceId)
+    } yield {
+      client.upsert(persistenceId,
+        "deletedSequenceNr" -> Math.max(existing, to)
+      )
     }
   }
 
@@ -117,14 +132,17 @@ class ElasticsearchJournalPlugin extends AsyncWriteJournal with AsyncRecovery wi
   }
 
   private def markAsDirty(persistenceId: String): Unit = {
-    if (knownDirty.get(persistenceId).filter(_.isCompleted).isEmpty) {
-      log.debug("${persitsenceId} became dirty.")
-      knownDirty(persistenceId) = Promise[Unit]
-    }
-    timers.startSingleTimer(persistenceId, AssumeIndexComplete(persistenceId), indexDelay)
+    self ! MarkIndexStarted(persistenceId)
   }
 
   override def receivePluginInternal: Actor.Receive = {
+    case MarkIndexStarted(persistenceId) =>
+      if (knownDirty.get(persistenceId).isEmpty) {
+        log.debug(s"${persistenceId} became dirty.")
+        knownDirty(persistenceId) = Promise[Unit]
+      }
+      timers.startSingleTimer(persistenceId, AssumeIndexComplete(persistenceId), indexDelay)
+
     case AssumeIndexComplete(persistenceId) =>
       for (p <- knownHighest.get(persistenceId)) {
         if (p.isCompleted) {
@@ -136,6 +154,7 @@ class ElasticsearchJournalPlugin extends AsyncWriteJournal with AsyncRecovery wi
       }
 
       for (d <- knownDirty.get(persistenceId)) {
+        log.debug(s"${persistenceId} is now no longer dirty.")
         d.success(())
       }
       knownDirty -= persistenceId
@@ -158,9 +177,17 @@ class ElasticsearchJournalPlugin extends AsyncWriteJournal with AsyncRecovery wi
       }
     } else {
       log.debug(s"Replaying $persistenceId from $from to $to")
-      val matchPersistenceId: JObject = ("term" -> ("persistenceId" -> persistenceId))
-      val matchSeqNr: JObject = ("range" -> ("sequenceNr" -> ("gte" -> from) ~ ("lte" -> to)))
-      client.search(("query" -> ("bool" -> ("must" -> Seq(matchPersistenceId, matchSeqNr)))) ~ ("sort" -> Seq("sequenceNr"))).map { resp =>
+
+      for {
+        deleteMark <- getDeletedMark(persistenceId)
+        matchPersistenceId: JObject = ("term" -> ("persistenceId" -> persistenceId))
+        gte = Math.max(if (deleteMark == Long.MaxValue) Long.MaxValue else deleteMark + 1, from)
+        matchSeqNr: JObject = ("range" -> ("sequenceNr" -> ("gte" -> gte) ~ ("lte" -> to)))
+        resp <- client.search(
+          ("query" -> ("bool" -> ("must" -> Seq(matchPersistenceId, matchSeqNr)))) ~
+          ("sort" -> Seq("sequenceNr"))
+        )
+      } yield {
         val hits = resp \ "hits" \ "hits"
         val sequenceNrs = for { JInt(nr) <- hits \\ "sequenceNr" } yield nr
         log.debug(s"  Received seqNrs $sequenceNrs")
@@ -185,5 +212,6 @@ class ElasticsearchJournalPlugin extends AsyncWriteJournal with AsyncRecovery wi
 }
 
 object ElasticsearchJournalPlugin {
+  private[elasticsearch] case class MarkIndexStarted(persistenceId: String)
   private[elasticsearch] case class AssumeIndexComplete(persistenceId: String)
 }
