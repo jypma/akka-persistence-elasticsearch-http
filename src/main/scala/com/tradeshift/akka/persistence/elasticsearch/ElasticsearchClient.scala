@@ -37,15 +37,20 @@ class ElasticsearchClient(implicit system: ActorSystem) extends StrictLogging {
           ("settings" -> settings) ~
           ("mappings" -> ("_doc" -> mappings))
         )))
-      ).recover {
+      ).map{
+        r => r.discardEntityBytes()
+        r
+      }.recover {
         case x if x.getMessage.contains("resource_already_exists_exception") =>
           // Ignore, assuming we've already created with the right settings.
           HttpResponse()
       }
+      _ <- resp1.discardEntityBytes().future
       resp2 <- request(
         method = PUT,
         path = /(indexName) / "_mapping" / "_doc",
         entity = HttpEntity(`application/json`, pretty(render(mappings))))
+      _ <- resp2.discardEntityBytes().future
     } yield {
       logger.debug(s"Created or updated elasticsearch journal index ${indexName}.")
     }
@@ -56,7 +61,11 @@ class ElasticsearchClient(implicit system: ActorSystem) extends StrictLogging {
     request(POST,
       path = /(indexName) / "_doc" / id,
       entity = HttpEntity(`application/json`, pretty(render(doc))))
-    .map(resp => ())
+      .flatMap(resp => resp.discardEntityBytes().future)
+      .map{d =>
+        logger.debug(s"Stored: ${id}")
+        ()
+      }
   }
 
   def upsert(id: String, fields: JObject): Future[Unit] = {
@@ -67,7 +76,8 @@ class ElasticsearchClient(implicit system: ActorSystem) extends StrictLogging {
         ("doc" -> fields) ~
         ("doc_as_upsert" -> true)
       ))))
-    .map(resp => ())
+      .flatMap(resp => resp.discardEntityBytes().future)
+      .map(_ => ())
   }
 
   def get(id: String): Future[Option[JValue]] = {
