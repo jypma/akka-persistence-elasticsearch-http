@@ -1,3 +1,5 @@
+enablePlugins(GitVersioning)
+
 val akkaVersion = "2.5.21"
 
 organization := "com.tradeshift"
@@ -70,3 +72,14 @@ releaseProcess := Seq(
   publishArtifacts,
   pushChanges
 )
+
+git.useGitDescribe := true
+
+git.baseVersion := "0.0.0"
+
+git.gitTagToVersionNumber := {
+  case VersionRegex(v,"") => Some(v)
+  case VersionRegex(v,"SNAPSHOT") => Some(s"$v-SNAPSHOT")
+  case VersionRegex(v,s) => Some(s"$v-$s-SNAPSHOT")
+  case _ => None
+}
