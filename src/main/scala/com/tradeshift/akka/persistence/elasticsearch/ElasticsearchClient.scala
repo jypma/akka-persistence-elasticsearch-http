@@ -17,6 +17,9 @@ import org.json4s.native.JsonMethods.{parse, render, pretty}
 import scala.concurrent.Future
 import akka.http.scaladsl.unmarshalling.Unmarshal
 import com.typesafe.scalalogging.StrictLogging
+import akka.http.scaladsl.model.HttpHeader
+import akka.http.scaladsl.model.headers.Authorization
+import akka.http.scaladsl.model.headers.BasicHttpCredentials
 
 class ElasticsearchClient(implicit system: ActorSystem) extends StrictLogging {
   implicit val mat = ActorMaterializer()
@@ -25,6 +28,15 @@ class ElasticsearchClient(implicit system: ActorSystem) extends StrictLogging {
   val config = system.settings.config.getConfig("akka-persistence-elasticsearch-http")
   val host = config.getString("host")
   val port = config.getString("port")
+  val defaultHeaders: Vector[HttpHeader] = {
+    val username = config.getString("username")
+    val password = config.getString("password")
+    if (!username.isEmpty || !password.isEmpty) {
+      Vector(Authorization(BasicHttpCredentials(username, password)))
+    } else {
+      Vector.empty
+    }
+  }
   val baseUri = Uri(s"http://${host}:${port}")
   val indexName = config.getString("indexName")
   val http = Http()
@@ -128,7 +140,10 @@ class ElasticsearchClient(implicit system: ActorSystem) extends StrictLogging {
   private def request(method: HttpMethod, path: Path, entity: RequestEntity = HttpEntity.Empty, query: Query = Query.Empty): Future[HttpResponse] = {
 
     http.singleRequest(HttpRequest(
-      uri = baseUri.withPath(path).withQuery(query), entity = entity, method = method
+      uri = baseUri.withPath(path).withQuery(query),
+      entity = entity,
+      method = method,
+      headers = defaultHeaders
     )).map { resp =>
       if (resp.status.isFailure()) {
         resp.discardEntityBytes()
