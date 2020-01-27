@@ -10,7 +10,7 @@ Its current implementation is tested using the following stack:
 
 - Scala 2.12.7
 - Akka 2.5.21
-- Elasticsearch 6.5.3
+- Elasticsearch 6.8.6
 
 ## Usage
 
