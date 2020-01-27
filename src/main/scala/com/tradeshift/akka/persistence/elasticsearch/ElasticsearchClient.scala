@@ -45,6 +45,7 @@ class ElasticsearchClient(implicit system: ActorSystem) extends StrictLogging {
     for {
       resp1 <- request(PUT,
         path = /(indexName),
+        query = Query("include_type_name" -> "true"),  // needed from ES 6.7+
         entity = HttpEntity(`application/json`, pretty(render(
           ("settings" -> settings) ~
           ("mappings" -> ("_doc" -> mappings))
