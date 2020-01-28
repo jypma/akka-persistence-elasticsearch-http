@@ -20,6 +20,7 @@ import com.typesafe.scalalogging.StrictLogging
 import akka.http.scaladsl.model.HttpHeader
 import akka.http.scaladsl.model.headers.Authorization
 import akka.http.scaladsl.model.headers.BasicHttpCredentials
+import scala.concurrent.duration._
 
 class ElasticsearchClient(implicit system: ActorSystem) extends StrictLogging {
   implicit val mat = ActorMaterializer()
@@ -139,22 +140,26 @@ class ElasticsearchClient(implicit system: ActorSystem) extends StrictLogging {
   }
 
   private def request(method: HttpMethod, path: Path, entity: RequestEntity = HttpEntity.Empty, query: Query = Query.Empty): Future[HttpResponse] = {
-
+    val uri = baseUri.withPath(path).withQuery(query)
     http.singleRequest(HttpRequest(
-      uri = baseUri.withPath(path).withQuery(query),
+      uri = uri,
       entity = entity,
       method = method,
       headers = defaultHeaders
-    )).map { resp =>
-      if (resp.status.isFailure()) {
-        resp.discardEntityBytes()
-        if (resp.status == NotFound) {
-          throw new NoSuchElementException("Not found: " + path)
+    )).flatMap { resp =>
+      if (resp.status.isSuccess) Future.successful(resp) else {
+        if (resp.status == StatusCodes.NotFound) {
+          resp.discardEntityBytes()
+          logger.debug(s"HTTP request ${uri} failed: ${resp}")
+          throw new NoSuchElementException(uri.toString)
         } else {
-          throw new RuntimeException("ES request failed: " + resp)
+          for (body <- resp.entity.toStrict(10.seconds)) yield {
+            val msg = s"HTTP request ${uri} failed: code ${resp.status} with ${body.contentType}: \n ${body.data.utf8String}"
+            logger.error(s"HTTP request ${uri} failed: code ${resp.status} with ${body.contentType}: \n ${body.data.utf8String}")
+            throw new IllegalStateException(msg)
+          }
         }
       }
-      resp
     }
   }
 }
